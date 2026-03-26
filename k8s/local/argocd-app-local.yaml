@@ -6,7 +6,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/thaisonnguyen/exness-trading-platform # (Update to your actual local repo URL or use Kustomize manually via Makefile)
+    repoURL: https://github.com/thaisonnguyenbt2/exness
     targetRevision: main
     path: k8s/local # Points to the overlay folder, which inherits from the base K8s folder
   destination:

@@ -21,9 +21,17 @@ build-orchestrator:
 build-frontend:
 	docker build -t xau-frontend:$(IMAGE_TAG) frontend
 
+install-argocd:
+	@kubectl get namespace argocd > /dev/null 2>&1 || kubectl create namespace argocd
+	@kubectl get crd applications.argoproj.io > /dev/null 2>&1 || (kubectl apply -n argocd --server-side -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml && echo "Waiting for ArgoCD CRDs to settle..." && sleep 5)
+
 # Requires local kubeconfig context pointing to Docker Desktop
-deploy-local: build-all
-	kubectl apply -k k8s/local # Applies the Kustomize overlay directly if ArgoCD is bypassed
+deploy-local: build-all install-argocd
+	kubectl apply -f k8s/local/argocd-app-local.yaml
+	kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
+	@echo "Waiting for frontend service to be created by ArgoCD..."
+	@while ! kubectl get svc frontend -n exness-trading > /dev/null 2>&1; do sleep 2; done
+	kubectl port-forward svc/frontend 3000:80 -n exness-trading
 
 apply-argocd:
 	kubectl apply -f k8s/local/argocd-app-local.yaml
