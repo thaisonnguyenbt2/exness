@@ -1,0 +1,17 @@
+{
+  "name": "xau-notification-service",
+  "version": "1.0.0",
+  "description": "Telegram notification broadcaster for XAU/USD signals",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.2",
+    "ioredis": "^5.3.2",
+    "mongodb": "^6.3.0",
+    "dotenv": "^16.3.1"
+  }
+}

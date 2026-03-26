@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../
+
+# Docker Desktop doesn't need to pull external images if we build them directly into its cache.
+# We override the production OCI tags with our locally compiled Make tags.
+images:
+  - name: ocir.io/tenancy/data-ingest:latest
+    newName: xau-data-ingest
+    newTag: local
+  - name: ocir.io/tenancy/ai-analyzer:latest
+    newName: xau-ai-analyzer
+    newTag: local
+  - name: ocir.io/tenancy/notification:latest
+    newName: xau-notification
+    newTag: local
+  - name: ocir.io/tenancy/orchestrator:latest
+    newName: xau-orchestrator
+    newTag: local
+  - name: ocir.io/tenancy/frontend:latest
+    newName: xau-frontend
+    newTag: local
+
+patches:
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+  - target:
+      kind: StatefulSet
+      name: data-ingest
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent

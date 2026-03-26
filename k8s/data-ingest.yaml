@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: data-ingest
+spec:
+  serviceName: "data-ingest"
+  replicas: 1 # Needs to be singleton to prevent dual websocket duplication
+  selector:
+    matchLabels:
+      app: data-ingest
+  template:
+    metadata:
+      labels:
+        app: data-ingest
+    spec:
+      containers:
+      - name: data-ingest
+        image: ocir.io/tenancy/data-ingest:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: app-config
+        - secretRef:
+            name: api-keys
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-ingest
+spec:
+  ports:
+  - port: 8080
+  selector:
+    app: data-ingest

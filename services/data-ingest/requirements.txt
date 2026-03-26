@@ -1,0 +1,10 @@
+fastapi==0.103.1
+uvicorn==0.23.2
+websockets==11.0.3
+motor==3.3.1
+redis==5.0.0
+pandas
+pandas-ta
+pydantic==2.4.2
+pytest==7.4.2
+pytest-asyncio==0.21.1

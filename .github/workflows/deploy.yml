@@ -1,0 +1,60 @@
+name: Build and Deploy Microservices
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ocir.io/tenancy
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Login to OCI Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.OCI_USERNAME }}
+          password: ${{ secrets.OCI_AUTH_TOKEN }}
+
+      - name: Build & Push Data Ingest
+        run: |
+          docker build -t ${{ env.REGISTRY }}/data-ingest:${{ github.sha }} services/data-ingest
+          docker push ${{ env.REGISTRY }}/data-ingest:${{ github.sha }}
+
+      - name: Build & Push AI Analyzer
+        run: |
+          docker build -t ${{ env.REGISTRY }}/ai-analyzer:${{ github.sha }} services/ai-analyzer
+          docker push ${{ env.REGISTRY }}/ai-analyzer:${{ github.sha }}
+
+      - name: Build & Push Notification
+        run: |
+          docker build -t ${{ env.REGISTRY }}/notification:${{ github.sha }} services/notification
+          docker push ${{ env.REGISTRY }}/notification:${{ github.sha }}
+
+      - name: Build & Push Orchestrator
+        run: |
+          docker build -t ${{ env.REGISTRY }}/orchestrator:${{ github.sha }} services/orchestrator
+          docker push ${{ env.REGISTRY }}/orchestrator:${{ github.sha }}
+
+      - name: Build & Push Frontend
+        run: |
+          docker build -t ${{ env.REGISTRY }}/frontend:${{ github.sha }} frontend
+          docker push ${{ env.REGISTRY }}/frontend:${{ github.sha }}
+
+      - name: Update K8s Manifests (GitOps trigger)
+        run: |
+          cd k8s
+          sed -i "s|image:.*data-ingest.*|image: ${{ env.REGISTRY }}/data-ingest:${{ github.sha }}|" data-ingest.yaml
+          sed -i "s|image:.*ai-analyzer.*|image: ${{ env.REGISTRY }}/ai-analyzer:${{ github.sha }}|" ai-notification.yaml
+          sed -i "s|image:.*notification.*|image: ${{ env.REGISTRY }}/notification:${{ github.sha }}|" ai-notification.yaml
+          sed -i "s|image:.*orchestrator.*|image: ${{ env.REGISTRY }}/orchestrator:${{ github.sha }}|" orchestrator.yaml
+          sed -i "s|image:.*frontend.*|image: ${{ env.REGISTRY }}/frontend:${{ github.sha }}|" frontend-ingress.yaml
+          
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          git commit -am "chore: deploy images for ${{ github.sha }}"
+          git push origin main

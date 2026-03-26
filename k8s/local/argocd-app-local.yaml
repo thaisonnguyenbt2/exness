@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: xau-trading-local
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/thaisonnguyen/exness-trading-platform # (Update to your actual local repo URL or use Kustomize manually via Makefile)
+    targetRevision: main
+    path: k8s/local # Points to the overlay folder, which inherits from the base K8s folder
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: exness-trading
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
