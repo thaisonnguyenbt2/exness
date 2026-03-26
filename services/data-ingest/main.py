@@ -6,7 +6,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import websockets
 from websocket_client import FinnhubWSClient
-from db import DatabaseSchema
 from redis_publisher import RedisPublisher
 from candle_aggregator import CandleAggregator
 
@@ -26,15 +25,12 @@ app.add_middleware(
 SYMBOL = os.getenv("SYMBOL", "OANDA:XAU_USD")
 
 # Global dependencies
-db = DatabaseSchema()
 redis_pub = RedisPublisher()
-aggregator = CandleAggregator(db, redis_pub, SYMBOL)
+aggregator = CandleAggregator(redis_pub, SYMBOL)
 ws_client = None
 active_connections: list[WebSocket] = []
 
 async def on_tick(price: float, volume: float, timestamp: int):
-    # Store raw tick
-    await db.insert_tick(SYMBOL, price, volume, timestamp)
     # Forward to aggregator
     await aggregator.process_tick(price, volume, timestamp)
     # Publish to internal services
@@ -54,7 +50,6 @@ async def on_ws_error(e: Exception):
 @app.on_event("startup")
 async def startup_event():
     # Initialize infrastructure
-    await db.init_indexes()
     await redis_pub.connect()
     
     # Pre-load historical candles for technical indicator continuity
@@ -71,7 +66,6 @@ async def shutdown_event():
     if ws_client:
         await ws_client.stop()
     await redis_pub.close()
-    await db.close()
     logger.info("Data Ingestion Service stopped")
 
 @app.get("/health/live")
@@ -81,35 +75,36 @@ async def liveness():
 @app.get("/health/ready")
 async def readiness():
     # Check dependencies
-    db_ok = db.client is not None
     redis_ok = redis_pub.connected
     ws_ok = ws_client and ws_client.is_running
     
-    if db_ok and redis_ok and ws_ok:
+    if redis_ok and ws_ok:
         return {"status": "ready"}
-    return {"status": "not_ready", "db": db_ok, "redis": redis_ok, "ws": ws_ok}, 503
+    return {"status": "not_ready", "redis": redis_ok, "ws": ws_ok}, 503
 
 @app.get("/api/v1/price")
 async def get_latest_price():
-    # In a real system, you'd cache this in Redis.
-    # For now, hit the DB's latest tick
-    cursor = db.db.ticks.find({"symbol": SYMBOL}).sort("timestamp", -1).limit(1)
-    ticks = await cursor.to_list(1)
-    if ticks:
-        t = ticks[0]
-        return {"symbol": t["symbol"], "price": t["price"], "timestamp": t["timestamp"]}
+    # Return latest known price from aggregator's current M1 candle
+    active_m1 = aggregator.current_candles.get("M1")
+    if active_m1:
+        return {"symbol": SYMBOL, "price": active_m1["close"], "timestamp": active_m1["timestamp"]}
     return {"error": "No price data available"}
 
 @app.get("/api/v1/candles")
 async def get_candles(timeframe: str = "M5", limit: int = 100):
-    candles = await db.get_recent_candles(SYMBOL, timeframe, limit)
-    for c in candles:
-        c.pop('_id', None)
-        c.pop('created_at', None)
+    candles = aggregator.historical_candles.get(timeframe, [])
+    
+    # Include currently forming active candle
+    active = aggregator.current_candles.get(timeframe)
+    if active:
+        response_candles = candles + [active]
+    else:
+        response_candles = candles
+        
     return {
         "symbol": SYMBOL,
         "timeframe": timeframe,
-        "candles": candles
+        "candles": response_candles[-limit:]
     }
 
 @app.websocket("/ws/price")

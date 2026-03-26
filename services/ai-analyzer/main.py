@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from db import DatabaseSchema
 from signal_generator import SignalGenerator
@@ -20,12 +20,32 @@ app.add_middleware(
 
 db = DatabaseSchema()
 signal_generator = SignalGenerator(db)
+active_ws_connections: list[WebSocket] = []
+
+async def redis_to_ws_broadcaster():
+    """Listens to analysis:live and broadcasts to all connected WebSockets."""
+    try:
+        pubsub = signal_generator.redis_client.pubsub()
+        await pubsub.subscribe("analysis:live")
+        logger.info("WebSocket broadcaster subscribing to analysis:live")
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                data = message["data"]
+                for connection in active_ws_connections.copy():
+                    try:
+                        await connection.send_text(data)
+                    except Exception:
+                        if connection in active_ws_connections:
+                            active_ws_connections.remove(connection)
+    except Exception as e:
+        logger.error(f"Broadcaster error: {e}")
 
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting AI Analyzer Service")
     await signal_generator.connect()
     asyncio.create_task(signal_generator.start_listening())
+    asyncio.create_task(redis_to_ws_broadcaster())
     
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -56,3 +76,14 @@ async def get_signals(limit: int = 10):
     except Exception as e:
         logger.error(f"Error fetching signals: {e}")
         return {"error": str(e)}
+
+@app.websocket("/ws/analysis")
+async def websocket_analysis(websocket: WebSocket):
+    await websocket.accept()
+    active_ws_connections.append(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        if websocket in active_ws_connections:
+            active_ws_connections.remove(websocket)

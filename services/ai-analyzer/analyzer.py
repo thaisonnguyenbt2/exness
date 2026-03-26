@@ -17,34 +17,37 @@ class GeminiAnalyzer:
                 system_instruction="You are an expert XAU/USD gold trader. Respond ONLY with valid JSON."
             )
 
-    async def analyze_market(self, symbol: str, current_price: float, timeframe: str, latest_candle: dict, historical_candles: list) -> dict:
-        """Calls Gemini to analyze the market based on technical indicators and history."""
+    async def analyze_multi_timeframe(self, symbol: str, m5_candles: list, m15_candles: list, m30_candles: list) -> dict:
+        """Calls Gemini to analyze the market based on multi-timeframe technical indicators."""
         if not self.api_key:
             return None
             
         try:
-            indicators = latest_candle.get("indicators", {})
-            candles_json = json.dumps([{
-                "time": c["timestamp"], 
-                "close": c["close"], 
-                "vol": c["volume"]
-            } for c in historical_candles[-20:]], indent=2)
+            def format_tf(candles):
+                if not candles: return "No data"
+                latest = candles[-1]
+                indicators = latest.get("indicators", {})
+                return f"""Price: ${latest['close']}
+RSI(14): {indicators.get('rsi', 'N/A')}
+MACD: {indicators.get('macd', {}).get('value', 'N/A')}, Signal: {indicators.get('macd', {}).get('signal', 'N/A')}
+BB: Upper {indicators.get('bb', {}).get('upper', 'N/A')}, Lower {indicators.get('bb', {}).get('lower', 'N/A')}
+EMA(9): {indicators.get('ema_9', 'N/A')}, EMA(21): {indicators.get('ema_21', 'N/A')}"""
+
+            m5_info = format_tf(m5_candles)
+            m15_info = format_tf(m15_candles)
+            m30_info = format_tf(m30_candles)
 
             prompt = f"""
-Analyze this {symbol} market data and provide trading signal:
+Analyze this {symbol} market data across multiple timeframes and provide a trading signal:
 
-Current Price: ${current_price}
-Timeframe: {timeframe}
+M5 Timeframe (Short-term context):
+{m5_info}
 
-Technical Indicators:
-- RSI(14): {indicators.get('rsi', 'N/A')} (Overbought: >70, Oversold: <30)
-- MACD: {indicators.get('macd', {}).get('value', 'N/A')}, Signal: {indicators.get('macd', {}).get('signal', 'N/A')}, Histogram: {indicators.get('macd', {}).get('histogram', 'N/A')}
-- Bollinger Bands: Upper ${indicators.get('bb', {}).get('upper', 'N/A')}, Middle ${indicators.get('bb', {}).get('middle', 'N/A')}, Lower ${indicators.get('bb', {}).get('lower', 'N/A')}
-- EMA(9): ${indicators.get('ema_9', 'N/A')}, EMA(21): ${indicators.get('ema_21', 'N/A')}
-- ADX: {indicators.get('adx', 'N/A')} (Trend strength)
+M15 Timeframe (Medium-term context):
+{m15_info}
 
-Recent Candles (last 20):
-{candles_json}
+M30 Timeframe (Macro trend context):
+{m30_info}
 
 Provide analysis strictly in JSON format matching this structure:
 {{
@@ -54,7 +57,7 @@ Provide analysis strictly in JSON format matching this structure:
   "entry_price": float,
   "stop_loss": float,
   "take_profit": float,
-  "reasoning": "brief explanation"
+  "reasoning": "multi-timeframe reasoning"
 }}
 """
             

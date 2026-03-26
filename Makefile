@@ -1,6 +1,9 @@
 # XAU/USD Trading Platform - Local Development Targets
 
-.PHONY: build-all build-ingest build-ai build-notify build-orchestrator build-frontend deploy-local apply-argocd
+.PHONY: build-all build-ingest build-ai build-notify build-orchestrator build-frontend deploy-local apply-argocd install-argocd dev
+
+dev:
+	docker compose up --build
 
 IMAGE_TAG ?= local
 
@@ -31,6 +34,8 @@ deploy-local: build-all install-argocd
 	kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
 	@echo "Waiting for frontend service to be created by ArgoCD..."
 	@while ! kubectl get svc frontend -n exness-trading > /dev/null 2>&1; do sleep 2; done
+	@echo "Waiting for frontend pods to be ready..."
+	@kubectl wait --for=condition=available deployment/frontend -n exness-trading --timeout=120s
 	kubectl port-forward svc/frontend 3000:80 -n exness-trading
 
 apply-argocd:

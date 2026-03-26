@@ -73,3 +73,8 @@ docker run -d --name mongodb --net trading-net mongo:6
 docker build -t xau-data-ingest services/data-ingest
 docker run -d --net trading-net --env-file .env.local -p 8080:8080 xau-data-ingest
 ```
+
+### Build a service alone
+```
+docker compose up --build -d ai-analyzer
+```

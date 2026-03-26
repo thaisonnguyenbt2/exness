@@ -1,0 +1,92 @@
+version: '3.8'
+
+x-env-config: &env-config
+  MONGODB_URI: "mongodb://mongodb:27017/trading"
+  REDIS_URL: "redis://redis:6379"
+  FINNHUB_WS_URL: "wss://ws.finnhub.io"
+  SYMBOL: "OANDA:XAU_USD"
+  FINNHUB_API_KEY: "${FINNHUB_API_KEY:-YOUR_FINNHUB_KEY}"
+  GEMINI_API_KEY: "${GEMINI_API_KEY:-YOUR_GEMINI_KEY}"
+  TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-YOUR_TELEGRAM_TOKEN}"
+  TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-YOUR_CHAT_ID}"
+
+services:
+  mongodb:
+    image: mongo:6.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+
+  redis:
+    image: redis:7.0-alpine
+    ports:
+      - "6379:6379"
+
+  data-ingest:
+    build:
+      context: services/data-ingest
+    ports:
+      - "8081:8080"
+    environment:
+      <<: *env-config
+    depends_on:
+      - mongodb
+      - redis
+
+  ai-analyzer:
+    build:
+      context: services/ai-analyzer
+    ports:
+      - "8083:8080"
+    environment:
+      <<: *env-config
+    depends_on:
+      - mongodb
+      - redis
+
+  notification:
+    build:
+      context: services/notification
+    environment:
+      <<: *env-config
+
+  orchestrator:
+    build:
+      context: services/orchestrator
+    ports:
+      - "8082:8082"
+    environment:
+      <<: *env-config
+    depends_on:
+      - mongodb
+      - redis
+
+  celery-worker:
+    build:
+      context: services/orchestrator
+    command: celery -A celery_tasks worker --loglevel=info
+    environment:
+      <<: *env-config
+    depends_on:
+      - orchestrator
+
+  celery-beat:
+    build:
+      context: services/orchestrator
+    command: celery -A celery_tasks beat --loglevel=info
+    environment:
+      <<: *env-config
+    depends_on:
+      - orchestrator
+
+  frontend:
+    build:
+      context: frontend
+    ports:
+      - "3000:3000"
+    environment:
+      <<: *env-config
+
+volumes:
+  mongodb_data:

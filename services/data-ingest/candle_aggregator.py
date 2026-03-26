@@ -6,9 +6,8 @@ from indicators import IndicatorEngine
 logger = logging.getLogger(__name__)
 
 class CandleAggregator:
-    def __init__(self, db, redis, symbol="OANDA:XAU_USD"):
-        self.db = db
-        self.redis = redis
+    def __init__(self, redis_pub, symbol="OANDA:XAU_USD"):
+        self.redis = redis_pub
         self.symbol = symbol
         # Timeframes mapping to seconds
         self.timeframes = {
@@ -24,17 +23,60 @@ class CandleAggregator:
         self.historical_candles = {tf: [] for tf in self.timeframes}
         
     async def load_historical_candles(self):
-        """Loads last 100 candles from DB to compute indicators seamlessly."""
-        for tf in self.timeframes:
-            historic = await self.db.get_recent_candles(self.symbol, tf, 100)
-            if historic:
-                for h in historic:
-                    # Strip mongo _id to standard format
-                    h.pop('_id', None)
-                    h.pop('created_at', None)
-                    h.pop('symbol', None)
-                    h.pop('timeframe', None)
-                    self.historical_candles[tf].append(h)
+        """Loads last 100 candles from Finnhub REST to compute indicators seamlessly."""
+        import os
+        import time
+        import aiohttp
+        
+        api_key = os.getenv("FINNHUB_API_KEY")
+        if not api_key:
+            logger.warning("No FINNHUB_API_KEY, cannot load history")
+            return
+            
+        to_time = int(time.time())
+        from_time = to_time - (3 * 24 * 60 * 60) # Last 3 days to get enough M30 candles
+        
+        # Map our timeframe to Finnhub resolution
+        resolution_map = {"M1": "1", "M5": "5", "M15": "15", "M30": "30", "1H": "60"}
+
+        async with aiohttp.ClientSession() as session:
+            for tf in self.timeframes:
+                res = resolution_map.get(tf, "1")
+                url = f"https://finnhub.io/api/v1/forex/candle?symbol={self.symbol}&resolution={res}&from={from_time}&to={to_time}&token={api_key}"
+                
+                try:
+                    async with session.get(url) as response:
+                        data = await response.json()
+                        if data and data.get("s") == "ok":
+                            candles = []
+                            for i in range(len(data['t'])):
+                                vol = data.get('v', [0]*len(data['t']))[i] if data.get('v') else 0
+                                c = {
+                                    "timestamp": data['t'][i] * 1000,
+                                    "open": data['o'][i],
+                                    "high": data['h'][i],
+                                    "low": data['l'][i],
+                                    "close": data['c'][i],
+                                    "volume": vol
+                                }
+                                candles.append(c)
+                            
+                            # Keep last 100
+                            self.historical_candles[tf] = candles[-100:]
+                            
+                            # Pre-calculate indicators on history sequentially
+                            working_list = []
+                            for idx, c in enumerate(self.historical_candles[tf]):
+                                working_list.append(c.copy())
+                                indicators = IndicatorEngine.calculate(working_list)
+                                if indicators:
+                                    self.historical_candles[tf][idx]["indicators"] = indicators
+                                    
+                            logger.info(f"Loaded {len(self.historical_candles[tf])} historical candles for {tf}")
+                        else:
+                            logger.warning(f"Failed to fetch history for {tf}: {data}")
+                except Exception as e:
+                    logger.error(f"Error fetching historical data for {tf}: {e}")
 
     def _get_candle_start(self, timestamp_ms: int, tf_seconds: int) -> int:
         """Rounds timestamp down to the nearest timeframe interval."""
@@ -86,9 +128,6 @@ class CandleAggregator:
         if len(self.historical_candles[tf]) > 100:
             self.historical_candles[tf].pop(0)
             
-        # Store in DB
-        await self.db.insert_candle(self.symbol, tf, closed_candle)
-        
         # Publish
         await self.redis.publish_candle(self.symbol, tf, closed_candle)
         logger.debug(f"Closed {tf} candle for {self.symbol}: {closed_candle['close']}")

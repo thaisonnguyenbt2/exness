@@ -20,7 +20,7 @@ export default function IndicatorChart({ timeframe = 'M5' }) {
     // Initial fetch
     const fetchCandles = async () => {
       try {
-        const res = await fetch(`http://localhost:8080/api/v1/candles?timeframe=${timeframe}&limit=100`);
+        const res = await fetch(`http://localhost:8081/api/v1/candles?timeframe=${timeframe}&limit=100`);
         const json = await res.json();
         if (json.candles) {
           const formatted = json.candles.map((c: any) => ({

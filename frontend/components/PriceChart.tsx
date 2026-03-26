@@ -19,19 +19,25 @@ const CandlestickShape = (props: any) => {
   const { x, y, width, height, payload } = props;
   const isGrowing = payload.close > payload.open;
   const color = isGrowing ? '#22c55e' : '#ef4444'; 
-  const wickTop = Math.min(payload.open, payload.close);
-  const wickBottom = Math.max(payload.open, payload.close);
   
-  // Calculate relative positions for the wick
-  // Note: Y-axis is inverted in SVGs (0 is top)
-  const openY = props.yAxis.scale(payload.open);
-  const closeY = props.yAxis.scale(payload.close);
-  const highY = props.yAxis.scale(payload.high);
-  const lowY = props.yAxis.scale(payload.low);
-
+  // Calculate relative positions for the wick cleanly without yAxis.scale() mapping
+  // This physically projects the [low, high] visual boundary onto the absolute 'open' and 'close'
+  const high = payload.high;
+  const low = payload.low;
+  const open = payload.open;
+  const close = payload.close;
+  
+  let openY = y;
+  let closeY = y;
+  
+  if (high !== low) {
+    const pixelRatio = height / (high - low);
+    openY = y + (high - open) * pixelRatio;
+    closeY = y + (high - close) * pixelRatio;
+  }
+  
   const boxTop = Math.min(openY, closeY);
   const boxHeight = Math.abs(openY - closeY) || 1; 
-
   const halfWidth = width / 2;
 
   return (
@@ -39,9 +45,9 @@ const CandlestickShape = (props: any) => {
       {/* High-Low Wick */}
       <line 
         x1={x + halfWidth} 
-        y1={highY} 
+        y1={y} 
         x2={x + halfWidth} 
-        y2={lowY} 
+        y2={y + height} 
       />
       {/* Open-Close Body */}
       <rect 
@@ -61,7 +67,7 @@ export default function PriceChart({ timeframe = 'M5' }) {
     // Initial fetch
     const fetchCandles = async () => {
       try {
-        const res = await fetch(`http://localhost:8080/api/v1/candles?timeframe=${timeframe}&limit=100`);
+        const res = await fetch(`http://localhost:8081/api/v1/candles?timeframe=${timeframe}&limit=100`);
         const json = await res.json();
         if (json.candles) {
           // Format timestamps
