@@ -88,8 +88,8 @@ port-forward-frontend:
 # --- Oracle Cloud Deployment Variables ---
 OCI_COMPARTMENT_ID ?= ocid1.tenancy.oc1..aaaaaaaaff4o35xfzgmq34zkq5vemqx6otahtjemr54yu5am6drh2x7d3nyq
 OCI_SUBNET_ID ?= ocid1.subnet.oc1.ap-singapore-1.aaaaaaaarsogtewxonrijwxo4p4lod2cttutk5hu4ysxmrarckd25faem7yq
-OCI_IMAGE_ID ?= ocid1.image.oc1..xxxx
-OCI_AD ?= Uocm:US-ASHBURN-AD-1
+OCI_IMAGE_ID ?= ocid1.image.oc1.ap-singapore-1.aaaaaaaau6s26vibk7dykvfupb5djtxp2736hhk4qhy6y35ncq4l5otfak4q
+OCI_AD ?= YYen:AP-SINGAPORE-1-AD-1
 SSH_PUB_KEY ?= ~/.ssh/id_rsa.pub
 
 deploy-oracle:
