@@ -8,3 +8,15 @@ resources:
   - ai-notification.yaml
   - orchestrator.yaml
   - frontend-ingress.yaml
+
+images:
+  - name: ocir.io/tenancy/data-ingest
+    newTag: latest
+  - name: ocir.io/tenancy/ai-analyzer
+    newTag: latest
+  - name: ocir.io/tenancy/notification
+    newTag: latest
+  - name: ocir.io/tenancy/orchestrator
+    newTag: latest
+  - name: ocir.io/tenancy/frontend
+    newTag: latest

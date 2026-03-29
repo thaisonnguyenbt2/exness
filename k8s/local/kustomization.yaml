@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
   - ../base
+  - argo-build-hook.yaml
 
 # Docker Desktop doesn't need to pull external images if we build them directly into its cache.
 # We override the production OCI tags with our locally compiled Make tags.

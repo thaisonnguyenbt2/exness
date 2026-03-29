@@ -1,0 +1,54 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: exness-argo-build-hook
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      name: exness-argo-build-hook
+    spec:
+      containers:
+      - name: builder
+        image: docker:cli
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "🚀 ArgoCD PreSync Hook Triggered: Bootstrapping native Docker image compilation..."
+            
+            # Install necessary tooling (Git and Make) into the Alpine footprint
+            apk update && apk add git make
+            
+            # Navigate to an ephemeral filesystem space and cleanly clone the active repo
+            cd /tmp
+            git clone https://github.com/thaisonnguyenbt2/exness.git workspace
+            cd workspace
+            
+            # Dynamically scrape the target version tag defined implicitly in the synchronized kustomization.yaml
+            # This precisely guarantees the Job compiles the exact Tag string that ArgoCD is preparing to deploy.
+            TARGET_TAG=$(awk '/newTag:/ {print $2; exit}' k8s/local/kustomization.yaml)
+            echo "🎯 Detected ArgoCD synchronized target tag: $TARGET_TAG"
+            
+            if [ -z "$TARGET_TAG" ]; then
+                echo "❌ ERRROR: Could not parse target newTag from k8s/local/kustomization.yaml!"
+                exit 1
+            fi
+            
+            # Compiling natively into the Host's Daemon Cache!
+            echo "🐳 Forcing identical Make compilation matrix..."
+            make build-all IMAGE_TAG=$TARGET_TAG
+            
+            echo "✅ Native Docker image building complete! ArgoCD will now instantly pull these local tags into the cluster."
+        volumeMounts:
+        - name: docker-socket
+          mountPath: /var/run/docker.sock
+      volumes:
+      - name: docker-socket
+        hostPath:
+          path: /var/run/docker.sock
+          type: Socket
+      restartPolicy: Never
