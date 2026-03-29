@@ -122,6 +122,60 @@ class SignalGenerator:
                     if analysis.get('signal') in ['BUY', 'SELL'] and analysis.get('confidence', 0) >= 70:
                         await self._handle_actionable_signal(symbol, tf, analysis)
 
+                # ── 15-minute market update (always, regardless of scenario) ──────────
+                if tf == "M15":
+                    smc_data = analysis.get("smc_data", {})
+                    lz       = analysis.get("liquidity_zones", {})
+                    stats    = analysis.get("stats", {})
+                    trend    = analysis.get("trend", "ranging")
+                    price    = analysis.get("entry_price", 0)
+
+                    # Build human-readable "what could happen next" outlook
+                    outlook_lines = []
+                    if smc_data.get("sweep_detected"):
+                        outlook_lines.append("🪤 Liquidity has been swept — watch for a sharp reversal off the nearest Order Block.")
+                    if smc_data.get("choch"):
+                        outlook_lines.append("🔄 Change of Character (ChoCh) detected — momentum may be shifting direction.")
+                    if smc_data.get("bos"):
+                        outlook_lines.append("✅ Break of Structure (BOS) confirmed — trend continuation trade is the primary scenario.")
+                    if smc_data.get("fvg_present"):
+                        outlook_lines.append("⚡ Fair Value Gap (FVG / imbalance) is open — price likely to revisit the gap before the next leg.")
+                    if not outlook_lines:
+                        if trend.lower() == "bullish":
+                            outlook_lines.append("📈 Market is consolidating above structure — look for a bullish continuation on the next impulse.")
+                        elif trend.lower() == "bearish":
+                            outlook_lines.append("📉 Market is consolidating below structure — bearish bias; watch for a retest of the breakdown zone.")
+                        else:
+                            outlook_lines.append("➡️ No clear SMC signal yet — price is in accumulation/distribution phase. Stay patient.")
+
+                    # Add key level highlights
+                    if smc_data.get("poi_zone"):
+                        outlook_lines.append(f"🎯 Key POI/OB to watch: ${float(smc_data['poi_zone']):.2f}")
+
+                    update_doc = {
+                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                        "symbol":    symbol,
+                        "type":      "UPDATE",
+                        "price":     price,
+                        "trend":     trend,
+                        "structure_m5":  smc_data.get("structure_m5", "N/A"),
+                        "structure_m15": smc_data.get("structure_m15", "N/A"),
+                        "htf_alignment": smc_data.get("htf_alignment", False),
+                        "sweep":     smc_data.get("sweep_detected", False),
+                        "bos":       smc_data.get("bos", False),
+                        "choch":     smc_data.get("choch", False),
+                        "fvg":       smc_data.get("fvg_present", False),
+                        "poi_zone":  smc_data.get("poi_zone", None),
+                        "stats":     stats,
+                        "liquidity_zones": lz,
+                        "outlook":   outlook_lines,
+                        "reasoning": analysis.get("reasoning", ""),
+                        "budget":    float(os.getenv("BUDGET", "500")),
+                    }
+                    await self.redis_client.publish("signals:new", json.dumps(update_doc))
+                    logger.info(f"Published 15m market UPDATE for {symbol} @ ${price}")
+
+
         except Exception as e:
             logger.error(f"Error processing candle update natively: {e}")
 

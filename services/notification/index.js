@@ -5,94 +5,109 @@ import { RateLimiter } from './rate_limiter.js';
 import { Database } from './db.js';
 import "dotenv/config";
 
-const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-const pubsub = new Redis(REDIS_URL, { enableReadyCheck: false });
-const telegram = new TelegramClient();
+const REDIS_URL  = process.env.REDIS_URL || 'redis://localhost:6379';
+const pubsub     = new Redis(REDIS_URL, { enableReadyCheck: false });
+const telegram   = new TelegramClient();
 const rateLimiter = new RateLimiter();
-const db = new Database();
+const db          = new Database();
 
-// Prevent ioredis unhandled exception crashes
+// Trade lifecycle channels (from paper_trading.py)
+const TRADE_CHANNELS = ['trade:pre_order', 'trade:filled', 'trade:closed'];
+
 pubsub.on('error', (err) => {
-    // Ignore harmless subscriber mode sync errors
     if (!err.message.includes('subscriber mode')) {
         console.error('Redis error:', err);
     }
 });
 
-async function start() {
-  console.log("🚀 Starting Notification Service...");
-  
-  await db.connect();
+async function handleTradeEvent(channel, data) {
+    let text;
+    if (channel === 'trade:pre_order') {
+        text = MessageFormatter.formatPreOrder(data);
+    } else if (channel === 'trade:filled') {
+        text = MessageFormatter.formatFilled(data);
+    } else if (channel === 'trade:closed') {
+        text = MessageFormatter.formatClosed(data);
+    }
+    if (!text) return;
 
-  pubsub.subscribe('signals:new', (err, count) => {
-    if (err) {
-      console.error('❌ Failed to subscribe:', err.message);
+    const success = await telegram.sendMessage(text);
+    const label   = `[${channel}] ${data.symbol} ${data.direction || ''} @ ${data.entry || data.exit_price || ''}`;
+    if (success) {
+        console.log(`✈️  Telegram sent  ${label}`);
     } else {
-      console.log(`✅ Subscribed to Redis channels: ${count}`);
+        console.error(`❌ Telegram failed ${label}`);
     }
-  });
-
-  pubsub.on('message', async (channel, message) => {
-    if (channel === 'signals:new') {
-      try {
-        const signal = JSON.parse(message);
-        console.log(`🔔 Received signal: ${signal.type} for ${signal.symbol}`);
-        
-        // Use global chat id configured in ENV
-        const chatId = process.env.TELEGRAM_CHAT_ID;
-        if (!chatId) {
-          console.warn("Skip: TELEGRAM_CHAT_ID not provided.");
-          return;
-        }
-
-        // 1. Rate Limiting Check (Bypass for anomalies since Python natively limits them)
-        if (signal.type !== "SHARK" && signal.type !== "HIGHLIGHT" && signal.type !== "SMC_ALERT") {
-            const allowed = await rateLimiter.checkRateLimit(chatId, signal.symbol);
-            if (!allowed) {
-              console.log(`⌛ Rate limited: Skipping standard alert for ${signal.symbol}`);
-              if (signal.id) await db.logDeliveryStatus(signal.id, 'rate_limited');
-              return;
-            }
-        }
-
-        // 1.5. Night-time Silence Mode (23:00 - 06:00 VNT)
-        if (signal.type === "HIGHLIGHT" || signal.type === "UPDATE") {
-            const vntDate = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh" }));
-            const currentHour = vntDate.getHours();
-            
-            // Sleep window: 11 PM to 6 AM Vietnam Time
-            if (currentHour >= 23 || currentHour < 6) {
-                console.log(`🌙 Night-mode active: Muting non-critical ${signal.type} for ${signal.symbol}`);
-                if (signal.id) await db.logDeliveryStatus(signal.id, 'muted_night_mode');
-                return;
-            }
-        }
-
-        // 2. Format Message
-        const text = MessageFormatter.formatSignal(signal);
-
-        // 3. Send Telegram Alert
-        const success = await telegram.sendMessage(text);
-
-        // 4. Log Status in MongoDB
-        if (success) {
-          console.log(`✈️ Successfully sent Telegram alert for ${signal.symbol}`);
-          await db.logDeliveryStatus(signal.id, 'sent');
-        } else {
-          console.error(`❌ Failed to send Telegram alert for ${signal.symbol}`);
-          await db.logDeliveryStatus(signal.id, 'failed', { error: 'Telegram API rejected' });
-        }
-
-      } catch (error) {
-        console.error('❌ Error processing signal:', error);
-      }
-    }
-  });
 }
 
-// Graceful shutdown
+async function handleSignal(data) {
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    if (!chatId) { console.warn('Skip: TELEGRAM_CHAT_ID not set'); return; }
+
+    // Rate-limit standard market signals only (not anomalies)
+    if (data.type !== 'SHARK' && data.type !== 'HIGHLIGHT' && data.type !== 'SMC_ALERT') {
+        const allowed = await rateLimiter.checkRateLimit(chatId, data.symbol);
+        if (!allowed) {
+            console.log(`⌛ Rate limited: ${data.symbol}`);
+            if (data.id) await db.logDeliveryStatus(data.id, 'rate_limited');
+            return;
+        }
+    }
+
+    // Night-time silence (23:00–06:00 VNT) for non-critical signals
+    if (data.type === 'HIGHLIGHT' || data.type === 'UPDATE') {
+        const vnt  = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
+        const hour = vnt.getHours();
+        if (hour >= 23 || hour < 6) {
+            console.log(`🌙 Night-mode: muting ${data.type}`);
+            if (data.id) await db.logDeliveryStatus(data.id, 'muted_night_mode');
+            return;
+        }
+    }
+
+    const text    = MessageFormatter.formatSignal(data);
+    const success = await telegram.sendMessage(text);
+    if (success) {
+        console.log(`✈️  Telegram sent  signals:new ${data.symbol}`);
+        await db.logDeliveryStatus(data.id, 'sent');
+    } else {
+        console.error(`❌ Telegram failed signals:new ${data.symbol}`);
+        await db.logDeliveryStatus(data.id, 'failed', { error: 'Telegram API rejected' });
+    }
+}
+
+async function start() {
+    console.log('🚀 Starting Notification Service...');
+    await db.connect();
+
+    // Subscribe to all channels
+    const allChannels = ['signals:new', ...TRADE_CHANNELS];
+    pubsub.subscribe(...allChannels, (err, count) => {
+        if (err) {
+            console.error('❌ Failed to subscribe:', err.message);
+        } else {
+            console.log(`✅ Subscribed to ${count} Redis channels: ${allChannels.join(', ')}`);
+        }
+    });
+
+    pubsub.on('message', async (channel, message) => {
+        try {
+            const data = JSON.parse(message);
+
+            if (TRADE_CHANNELS.includes(channel)) {
+                await handleTradeEvent(channel, data);
+            } else if (channel === 'signals:new') {
+                console.log(`🔔 Signal: ${data.type} — ${data.symbol}`);
+                await handleSignal(data);
+            }
+        } catch (err) {
+            console.error(`❌ Error processing [${channel}]:`, err);
+        }
+    });
+}
+
 process.on('SIGINT', async () => {
-    console.log("Shutting down...");
+    console.log('Shutting down...');
     pubsub.disconnect();
     await db.close();
     process.exit(0);

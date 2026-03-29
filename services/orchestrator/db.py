@@ -12,7 +12,7 @@ class Database:
         config = await self.db.system_config.find_one({"_id": "global_config"})
         if not config:
             # Default config
-            config = {"paper_trading_enabled": True, "risk_per_trade_percent": 1.0}
+            config = {"paper_trading_enabled": True, "risk_per_trade_percent": 2.0}
             await self.db.system_config.insert_one({"_id": "global_config", **config})
         return config
 

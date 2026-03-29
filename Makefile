@@ -90,7 +90,7 @@ OCI_COMPARTMENT_ID ?= ocid1.tenancy.oc1..aaaaaaaaff4o35xfzgmq34zkq5vemqx6otahtje
 OCI_SUBNET_ID ?= ocid1.subnet.oc1.ap-singapore-1.aaaaaaaarsogtewxonrijwxo4p4lod2cttutk5hu4ysxmrarckd25faem7yq
 OCI_IMAGE_ID ?= ocid1.image.oc1.ap-singapore-1.aaaaaaaau6s26vibk7dykvfupb5djtxp2736hhk4qhy6y35ncq4l5otfak4q
 OCI_AD ?= YYen:AP-SINGAPORE-1-AD-1
-SSH_PUB_KEY ?= ~/.ssh/id_rsa.pub
+SSH_PUB_KEY ?= $$HOME/.ssh/id_rsa.pub
 
 deploy-oracle:
 	@echo "🚀 Launching Oracle Cloud Compute Instance with Automated GitOps Pipeline..."
