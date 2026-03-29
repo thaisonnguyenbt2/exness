@@ -206,11 +206,13 @@ export class MessageFormatter {
 
     // Normalise: analyzer publishes `signal` field, lifecycle uses `type`
     if (!signal.type && signal.signal) signal.type = signal.signal;
+    if (!signal.type) signal.type = 'UNKNOWN';
+
     // Ensure timestamp is always valid
     if (!signal.timestamp) signal.timestamp = Date.now();
 
-    const isBuy    = signal.type && signal.type.toUpperCase() === 'BUY';
-    const isUpdate = signal.type && signal.type.toUpperCase() === 'UPDATE';
+    const isBuy    = signal.type.toUpperCase() === 'BUY';
+    const isUpdate = signal.type.toUpperCase() === 'UPDATE';
 
     let icon = '🔴';
     const dt      = new Date(signal.timestamp);
