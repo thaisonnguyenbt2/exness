@@ -56,124 +56,148 @@ async def simulate_paper_trading():
     """
     Subscribes to signals:new (entries) and price:updates (track stops/targets).
     """
-    pubsub = redis_client.pubsub()
-    await pubsub.subscribe("signals:new", "price:updates")
+    try:
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe("signals:new", "price:updates")
+        print(f"🚀 Paper Trading Engine started  |  Budget: ${BUDGET}  |  Risk/trade: ${risk_amount()}")
+        print("📡 Subscribed to: signals:new, price:updates")
 
-    print(f"🚀 Paper Trading Engine started  |  Budget: ${BUDGET}  |  Risk/trade: ${risk_amount()}")
-
-    async for message in pubsub.listen():
-        if message["type"] != "message":
-            continue
-
-        channel = message["channel"].decode("utf-8")
-        data    = json.loads(message["data"].decode("utf-8"))
-
-        # ── new signal → open virtual trade ───────────────────────────────
-        if channel == "signals:new":
-            config = await db.get_system_config()
-            if not config.get("paper_trading_enabled", True):
-                continue
-            if data.get("confidence", 0) < MIN_CONFIDENCE:
+        async for message in pubsub.listen():
+            if message["type"] != "message":
                 continue
 
-            direction   = data.get("type", "BUY").upper()
-            if direction not in ("BUY", "SELL"):
-                continue
+            channel = message["channel"].decode("utf-8")
+            data    = json.loads(message["data"].decode("utf-8"))
 
-            entry  = float(data.get("entry_price", 0))
-            stop   = float(data.get("stop_loss",   0))
-            if entry == 0 or stop == 0:
-                continue
+            # ── new signal → open virtual trade ───────────────────────────────
+            if channel == "signals:new":
+                config = await db.get_system_config()
+                if not config.get("paper_trading_enabled", True):
+                    continue
+                if data.get("confidence", 0) < MIN_CONFIDENCE:
+                    continue
 
-            tp   = calc_take_profit(direction, entry, stop)
-            qty  = calc_position_size(entry, stop)
-            risk = risk_amount()
+                # Normalise direction: analyzer sends 'signal' key, not 'type'
+                direction = (data.get("type") or data.get("signal") or "WAIT").upper()
+                if direction not in ("BUY", "SELL"):
+                    continue
 
-            # 1. Pre-order notification
-            pre_order = {
-                "event":     "pre_order",
-                "symbol":    data["symbol"],
-                "direction": direction,
-                "entry":     entry,
-                "stop":      stop,
-                "tp":        tp,
-                "qty":       qty,
-                "risk":      risk,
-                "budget":    BUDGET,
-                "scenario":  data.get("scenario", ""),
-                "smc_data":  data.get("smc_data", {}),
-                "timestamp": now_utc(),
-            }
-            await publish("trade:pre_order", pre_order)
-            print(f"📢 Pre-order  → {direction} {data['symbol']} @ {entry}  SL:{stop}  TP:{tp}  Qty:{qty}")
+                entry = float(data.get("entry_price", 0))
+                if entry == 0:
+                    continue
 
-            # 2. Record and simulate fill (paper = instant)
-            trade_doc = {
-                "symbol":     data["symbol"],
-                "type":       direction,
-                "entry_price": entry,
-                "stop_loss":  stop,
-                "take_profit": tp,
-                "qty":        qty,
-                "risk":       risk,
-                "status":     "OPEN",
-            }
-            result = await db.record_trade(trade_doc)
+                # ── Single trade guard: only 1 open position at a time ──────────
+                symbol_key = data.get("symbol", "")
+                existing = await db.get_open_trades(symbol_key)
+                if existing:
+                    print(f"⏸️  Skipping signal — already have an open {symbol_key} position")
+                    continue
 
-            # 3. Filled notification
-            filled = {**pre_order, "event": "filled", "trade_id": str(result.inserted_id)}
-            await publish("trade:filled", filled)
-            print(f"✅ Filled     → {direction} {data['symbol']} @ {entry}")
-
-        # ── price update → check TP / SL ──────────────────────────────────
-        elif channel == "price:updates":
-            symbol        = data["symbol"]
-            current_price = float(data["price"])
-
-            open_trades = await db.get_open_trades(symbol)
-            for trade in open_trades:
-                direction = trade["type"]
-                entry     = trade["entry_price"]
-                stop      = trade["stop_loss"]
-                tp        = trade["take_profit"]
-                qty       = trade.get("qty", 0)
-                risk      = trade.get("risk", risk_amount())
-
-                hit_sl = False
-                hit_tp = False
-
+                # Fixed $10 stop-loss / take-profit
                 if direction == "BUY":
-                    pnl    = (current_price - entry) * qty
-                    hit_sl = current_price <= stop
-                    hit_tp = current_price >= tp
+                    stop = round(entry - 10.0, 2)
+                    tp   = round(entry + 10.0, 2)
                 else:
-                    pnl    = (entry - current_price) * qty
-                    hit_sl = current_price >= stop
-                    hit_tp = current_price <= tp
+                    stop = round(entry + 10.0, 2)
+                    tp   = round(entry - 10.0, 2)
 
-                if hit_sl or hit_tp:
-                    outcome = "TP" if hit_tp else "SL"
-                    await db.close_trade(trade["_id"], current_price, pnl)
+                # Position size based on $10 risk (distance is always $10)
+                qty  = round(risk_amount() / 10.0, 6)
+                risk = risk_amount()
 
-                    closed_event = {
-                        "event":         "trade_closed",
-                        "outcome":       outcome,
-                        "symbol":        symbol,
-                        "direction":     direction,
-                        "entry":         entry,
-                        "exit_price":    current_price,
-                        "stop":          stop,
-                        "tp":            tp,
-                        "qty":           qty,
-                        "pnl":           round(pnl, 2),
-                        "risk":          risk,
-                        "budget_after":  round(BUDGET + pnl, 2),
-                        "timestamp":     now_utc(),
-                    }
-                    await publish("trade:closed", closed_event)
-                    emoji = "🏆" if hit_tp else "❌"
-                    print(f"{emoji} Trade closed ({outcome})  {symbol}  {direction}  exit:{current_price}  P&L:{pnl:+.2f}")
+                # 1. Pre-order notification
+                pre_order = {
+                    "event":     "pre_order",
+                    "symbol":    data["symbol"],
+                    "direction": direction,
+                    "entry":     entry,
+                    "stop":      stop,
+                    "tp":        tp,
+                    "qty":       qty,
+                    "risk":      risk,
+                    "budget":    BUDGET,
+                    "scenario":  data.get("scenario", ""),
+                    "smc_data":  data.get("smc_data", {}),
+                    "stats":     data.get("stats", {}),
+                    "timestamp": now_utc(),
+                }
+                await publish("trade:pre_order", pre_order)
+                print(f"📢 Pre-order  → {direction} {data['symbol']} @ {entry}  SL:{stop}  TP:{tp}  Qty:{qty}")
+
+                # 2. Record and simulate fill (paper = instant)
+                trade_doc = {
+                    "symbol":      data["symbol"],
+                    "type":        direction,
+                    "entry_price": entry,
+                    "stop_loss":   stop,
+                    "take_profit": tp,
+                    "qty":         qty,
+                    "risk":        risk,
+                    "status":      "OPEN",
+                }
+                result = await db.record_trade(trade_doc)
+
+                # 3. Filled notification
+                filled = {**pre_order, "event": "filled", "trade_id": str(result.inserted_id)}
+                await publish("trade:filled", filled)
+                print(f"✅ Filled     → {direction} {data['symbol']} @ {entry}")
+
+            # ── price update → check TP / SL ──────────────────────────────────
+            elif channel == "price:updates":
+                symbol        = data["symbol"]
+                current_price = float(data["price"])
+
+                open_trades = await db.get_open_trades(symbol)
+                for trade in open_trades:
+                    direction = trade["type"]
+                    entry     = trade["entry_price"]
+                    stop      = trade["stop_loss"]
+                    tp        = trade["take_profit"]
+                    qty       = trade.get("qty", 0)
+                    risk      = trade.get("risk", risk_amount())
+
+                    hit_sl = False
+                    hit_tp = False
+
+                    if direction == "BUY":
+                        pnl    = (current_price - entry) * qty
+                        hit_sl = current_price <= stop
+                        hit_tp = current_price >= tp
+                    else:
+                        pnl    = (entry - current_price) * qty
+                        hit_sl = current_price >= stop
+                        hit_tp = current_price <= tp
+
+                    if hit_sl or hit_tp:
+                        outcome = "TP" if hit_tp else "SL"
+                        await db.close_trade(trade["_id"], current_price, pnl)
+
+                        closed_event = {
+                            "event":        "trade_closed",
+                            "outcome":      outcome,
+                            "symbol":       symbol,
+                            "direction":    direction,
+                            "entry":        entry,
+                            "exit_price":   current_price,
+                            "stop":         stop,
+                            "tp":           tp,
+                            "qty":          qty,
+                            "pnl":          round(pnl, 2),
+                            "risk":         risk,
+                            "budget_after": round(BUDGET + pnl, 2),
+                            "timestamp":    now_utc(),
+                        }
+                        await publish("trade:closed", closed_event)
+                        emoji = "🏆" if hit_tp else "❌"
+                        print(f"{emoji} Trade closed ({outcome})  {symbol}  {direction}  exit:{current_price}  P&L:{pnl:+.2f}")
+
+    except Exception as e:
+        print(f"💥 Paper trading engine crashed: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 async def start_engine():
     asyncio.create_task(simulate_paper_trading())
+
+

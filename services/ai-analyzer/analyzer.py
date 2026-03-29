@@ -211,6 +211,14 @@ class GeminiAnalyzer:
                 signal = "WAIT"
                 confidence = 0
 
+            # Compute simple moving averages for M15 candles
+            ma20 = None
+            ma50 = None
+            if len(m15_candles) >= 20:
+                ma20 = round(sum(c['close'] for c in m15_candles[-20:]) / 20, 2)
+            if len(m15_candles) >= 50:
+                ma50 = round(sum(c['close'] for c in m15_candles[-50:]) / 50, 2)
+
             bb_m15 = ind_m15.get('bb', {})
             macd_m15 = ind_m15.get('macd', {})
             stats = {
@@ -219,7 +227,9 @@ class GeminiAnalyzer:
                 "bb_middle": round(bb_m15.get("middle", 0), 2),
                 "bb_lower": round(bb_m15.get("lower", 0), 2),
                 "macd_val": round(macd_m15.get("value", 0), 4),
-                "macd_signal": round(macd_m15.get("signal", 0), 4)
+                "macd_signal": round(macd_m15.get("signal", 0), 4),
+                "ma20": ma20,
+                "ma50": ma50,
             }
 
             smc_output = {

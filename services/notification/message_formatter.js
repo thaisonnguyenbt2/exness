@@ -7,31 +7,83 @@ export class MessageFormatter {
   // ── Trade lifecycle (new) ─────────────────────────────────────────────
 
   static formatPreOrder(event) {
-    const dir  = event.direction === 'BUY' ? '🟢 BUY' : '🔴 SELL';
-    const ts   = MessageFormatter._time(event.timestamp);
-    const pnlTarget = (event.risk * 2).toFixed(2);
+    const dir    = event.direction === 'BUY' ? '🟢 BUY' : '🔴 SELL';
+    const dirEmj = event.direction === 'BUY' ? '📈' : '📉';
+    const ts     = MessageFormatter._time(event.timestamp);
+    const s      = event.stats  || {};
+    const smc    = event.smc_data || {};
 
+    // ── Header: price + action ───────────────────────────────────
     let msg = `━━━━━━━━━━━━━━━━━━━━\n`;
     msg += `${dir} <b>@ $${event.entry.toFixed(2)}</b>\n`;
-    msg += `<i>About to place order — waiting for fill</i>\n\n`;
-    msg += `⚖️ <b>Position Details</b>\n`;
-    msg += `• Qty: ${event.qty} contracts\n`;
-    msg += `• Stop-Loss: $${event.stop.toFixed(2)}\n`;
-    msg += `• Take-Profit: $${event.tp.toFixed(2)}\n`;
-    msg += `• Risk: $${event.risk.toFixed(2)} (2% of $${event.budget})\n`;
-    msg += `• Reward Target: +$${pnlTarget}\n\n`;
+    msg += `🎯 SL: <b>$${event.stop.toFixed(2)}</b> (-$10)   TP: <b>$${event.tp.toFixed(2)}</b> (+$10)\n`;
+    msg += `<i>Pre-order placed — awaiting fill confirmation</i>\n\n`;
+
+    // ── Why this trade? ─────────────────────────────────────────
+    msg += `${dirEmj} <b>Why this trade?</b>\n`;
+
+    // Trend context
+    if (event.trend) {
+      const trendLabel = event.trend === 'bullish' ? '🟢 Bullish' : event.trend === 'bearish' ? '🔴 Bearish' : '⬛ Ranging';
+      msg += `• Market Trend: ${trendLabel}\n`;
+    }
+
+    // Indicator interpretation
+    if (s.rsi) {
+      let rsiNote = '';
+      if (s.rsi < 30)       rsiNote = ' → Oversold, reversal likely';
+      else if (s.rsi > 70)  rsiNote = ' → Overbought, caution on longs';
+      else if (s.rsi < 45)  rsiNote = ' → Weak momentum, bearish lean';
+      else if (s.rsi > 55)  rsiNote = ' → Strong momentum, bullish lean';
+      else                   rsiNote = ' → Neutral zone';
+      msg += `• RSI (14): ${s.rsi}${rsiNote}\n`;
+    }
+    if (s.ma20 && s.ma50) {
+      const maTrend = s.ma20 > s.ma50
+        ? `MA20 (${s.ma20}) > MA50 (${s.ma50}) → Short-term bullish bias`
+        : `MA20 (${s.ma20}) < MA50 (${s.ma50}) → Short-term bearish bias`;
+      msg += `• Moving Averages: ${maTrend}\n`;
+    }
+    if (s.bb_lower && s.bb_upper && event.entry) {
+      const bbMid  = +s.bb_middle || ((+s.bb_lower + +s.bb_upper) / 2);
+      const bbPos  = event.entry > bbMid ? 'upper half (bearish extension)' : 'lower half (support zone)';
+      msg += `• Bollinger Bands: Price in ${bbPos} [${s.bb_lower}–${s.bb_upper}]\n`;
+    }
+    if (s.macd_val !== undefined) {
+      const macdCross = s.macd_val > s.macd_signal ? 'bullish cross' : 'bearish cross';
+      msg += `• MACD: ${s.macd_val} vs Signal ${s.macd_signal} → ${macdCross}\n`;
+    }
+
+    // SMC context
+    if (smc.structure_m15 || smc.structure_m5) {
+      msg += `• Structure: M15 ${smc.structure_m15 || '–'} / M5 ${smc.structure_m5 || '–'}\n`;
+    }
+    if (smc.sweep_detected) msg += `• 🧲 Liquidity swept — strong reversal signal\n`;
+    if (smc.choch)          msg += `• 🔄 ChoCh detected — momentum shift confirmed\n`;
+    if (smc.bos)            msg += `• ✅ BOS confirmed — continuation bias\n`;
+    if (smc.fvg_present)    msg += `• ⚡ FVG open — price likely rebalancing\n`;
+    if (smc.poi_zone)       msg += `• 🎯 Key POI/OB: $${parseFloat(smc.poi_zone).toFixed(2)}\n`;
+
+    // Scenario label
     if (event.scenario) {
-      msg += `📐 <b>SMC Setup:</b> ${MessageFormatter._scenario(event.scenario)}\n`;
+      msg += `• 📐 Setup: ${MessageFormatter._scenario(event.scenario)}\n`;
     }
-    if (event.smc_data && event.smc_data.poi_zone) {
-      msg += `🎯 <b>POI Zone:</b> $${parseFloat(event.smc_data.poi_zone).toFixed(2)}\n`;
+
+    // Textual reasoning from the engine
+    const reasoning = event.reasoning || event.ai_analysis?.reasoning || '';
+    if (reasoning) {
+      msg += `\n💬 <i>${reasoning}</i>\n`;
     }
-    if (event.smc_data && event.smc_data.sweep_detected) {
-      msg += `🧲 <b>Liquidity Sweep:</b> ✅ Confirmed\n`;
-    }
+
+    // ── Position details ─────────────────────────────────────────
+    msg += `\n⚖️ <b>Position</b>\n`;
+    msg += `• Risk: $${event.risk.toFixed(2)} (2% of $${event.budget})   Reward: +$${(event.risk * 2).toFixed(2)}\n`;
+    msg += `• Qty: ${event.qty} contracts   Confidence: ${event.confidence || '–'}%\n`;
+
     msg += `\n⏰ ${ts}`;
     return msg;
   }
+
 
   static formatFilled(event) {
     const dir = event.direction === 'BUY' ? '🟢 BUY' : '🔴 SELL';
@@ -151,6 +203,11 @@ export class MessageFormatter {
     // 15-minute market update
     if (signal.type === 'UPDATE') return MessageFormatter.formatMarketUpdate(signal);
 
+
+    // Normalise: analyzer publishes `signal` field, lifecycle uses `type`
+    if (!signal.type && signal.signal) signal.type = signal.signal;
+    // Ensure timestamp is always valid
+    if (!signal.timestamp) signal.timestamp = Date.now();
 
     const isBuy    = signal.type && signal.type.toUpperCase() === 'BUY';
     const isUpdate = signal.type && signal.type.toUpperCase() === 'UPDATE';

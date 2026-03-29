@@ -49,8 +49,7 @@ async def periodic_15m_report_loop():
             logger.info("Executing scheduled 15-minute market context trigger")
             # The signal_generator handles pulling fresh multi-timeframe candles directly prior to the AI
             # Passing tf='M15' universally coerces the engine into broadcasting the ℹ️ Telegram 'UPDATE' state!
-            import os
-            current_symbol = os.getenv("SYMBOL", "BINANCE:BTCUSDT")
+            current_symbol = os.getenv("SYMBOL", "OANDA:XAU_USD")
             await signal_generator.process_candle_update(
                 symbol=current_symbol,
                 candle={"close": "Scheduled"},

@@ -209,10 +209,15 @@ class SignalGenerator:
             "symbol": symbol,
             "timeframe": timeframe,
             "type": analysis["signal"],
+            "signal": analysis["signal"],
             "confidence": analysis["confidence"],
             "entry_price": analysis["entry_price"],
             "stop_loss": analysis["stop_loss"],
             "take_profit": analysis["take_profit"],
+            "trend": analysis.get("trend", "ranging"),
+            "reasoning": analysis.get("reasoning", ""),
+            "stats": analysis.get("stats", {}),
+            "smc_data": analysis.get("smc_data", {}),
             "ai_analysis": {
                 "trend": analysis["trend"],
                 "reasoning": analysis["reasoning"]
