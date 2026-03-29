@@ -20,7 +20,7 @@ export class TelegramClient {
       const response = await axios.post(`${this.baseUrl}/sendMessage`, {
         chat_id: this.chatId,
         text: text,
-        parse_mode: 'Markdown'
+        parse_mode: 'HTML'
       });
       return response.data.ok;
     } catch (error) {

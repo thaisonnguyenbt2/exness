@@ -7,6 +7,7 @@ from pydantic import BaseModel
 import websockets
 from websocket_client import FinnhubWSClient
 from redis_publisher import RedisPublisher
+from db import DatabaseSchema
 from candle_aggregator import CandleAggregator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -26,7 +27,8 @@ SYMBOL = os.getenv("SYMBOL", "OANDA:XAU_USD")
 
 # Global dependencies
 redis_pub = RedisPublisher()
-aggregator = CandleAggregator(redis_pub, SYMBOL)
+db = DatabaseSchema()
+aggregator = CandleAggregator(redis_pub, db, SYMBOL)
 ws_client = None
 active_connections: list[WebSocket] = []
 
@@ -51,6 +53,7 @@ async def on_ws_error(e: Exception):
 async def startup_event():
     # Initialize infrastructure
     await redis_pub.connect()
+    await db.setup_indexes()
     
     # Pre-load historical candles for technical indicator continuity
     await aggregator.load_historical_candles()

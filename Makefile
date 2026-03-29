@@ -43,3 +43,25 @@ apply-argocd:
 
 port-forward-frontend:
 	kubectl port-forward svc/frontend 3000:80 -n exness-trading
+
+# --- Oracle Cloud Deployment Variables ---
+OCI_COMPARTMENT_ID ?= ocid1.compartment.oc1..xxxx
+OCI_SUBNET_ID ?= ocid1.subnet.oc1..xxxx
+OCI_IMAGE_ID ?= ocid1.image.oc1..xxxx
+OCI_AD ?= Uocm:US-ASHBURN-AD-1
+SSH_PUB_KEY ?= ~/.ssh/id_rsa.pub
+
+deploy-oracle:
+	@echo "🚀 Launching Oracle Cloud Compute Instance with Automated GitOps Pipeline..."
+	oci compute instance launch \
+		--display-name "exness-trading-node" \
+		--compartment-id "$(OCI_COMPARTMENT_ID)" \
+		--availability-domain "$(OCI_AD)" \
+		--shape "VM.Standard.A1.Flex" \
+		--shape-config '{"ocpus": 4, "memoryInGBs": 24}' \
+		--subnet-id "$(OCI_SUBNET_ID)" \
+		--image-id "$(OCI_IMAGE_ID)" \
+		--ssh-authorized-keys-file "$(SSH_PUB_KEY)" \
+		--user-data-file ./cloud-init.yaml \
+		--assign-public-ip true
+	@echo "✅ Instance provisioning started! Tailscale and ArgoCD will be available in ~5 minutes."

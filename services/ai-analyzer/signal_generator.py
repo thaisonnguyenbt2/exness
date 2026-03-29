@@ -1,4 +1,5 @@
 import time
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -18,6 +19,8 @@ class SignalGenerator:
         self.last_analysis_time = 0
         self.cooldown_seconds = 30
         self.analyzing = False
+        self.last_shark_alert = 0
+        self.last_highlight_alert = 0
 
     async def connect(self):
         try:
@@ -26,50 +29,48 @@ class SignalGenerator:
         except Exception as e:
             logger.error(f"Redis connection failed: {e}")
 
-    async def process_candle_update(self, symbol: str, m5_candle: dict):
-        """Called when a new M5 candle closes via Redis."""
-        now = time.time()
-        
-        if now - self.last_analysis_time < self.cooldown_seconds:
-            return
-            
-        if self.analyzing:
-            return
-            
-        self.analyzing = True
+    async def process_candle_update(self, symbol: str, candle: dict, tf: str):
+        """Called when a new candle closes via Redis."""
         try:
             import aiohttp
-            logger.info(f"Triggering Multi-Timeframe AI Analysis for {symbol} at ${m5_candle['close']}")
+            logger.info(f"Triggering Multi-Timeframe AI Analysis for {symbol} at ${candle['close']} (Trigger: {tf})")
             
-            # Fetch contextual timeframes from data-ingest in-memory API
-            m5_candles = []
-            m15_candles = []
-            m30_candles = []
-            
-            async with aiohttp.ClientSession() as session:
-                async def fetch_tf(tf):
-                    try:
-                        async with session.get(f"http://data-ingest:8080/api/v1/candles?timeframe={tf}&limit=20") as resp:
-                            data = await resp.json()
-                            return data.get("candles", [])
-                    except Exception:
-                        return []
-                
-                m5_candles, m15_candles, m30_candles = await asyncio.gather(
-                    fetch_tf("M5"), fetch_tf("M15"), fetch_tf("M30")
-                )
+            # Fetch contextual timeframes completely infinitely directly from MongoDB clusters
+            m1_candles, m5_candles, m15_candles, m30_candles = await asyncio.gather(
+                self.db.get_recent_candles(symbol, "M1", 200),
+                self.db.get_recent_candles(symbol, "M5", 200),
+                self.db.get_recent_candles(symbol, "M15", 200),
+                self.db.get_recent_candles(symbol, "M30", 200)
+            )
             
             analysis = await self.analyzer.analyze_multi_timeframe(
                 symbol=symbol,
+                m1_candles=m1_candles,
                 m5_candles=m5_candles,
                 m15_candles=m15_candles,
                 m30_candles=m30_candles
             )
             
+            if tf == "M5" and m5_candles and len(m5_candles) >= 20:
+                await self._check_big_shark(symbol, m5_candles)
+                
+                # Intercept Highlights real-time
+                if analysis and analysis.get("highlight") and "CHÚ Ý" in analysis.get("highlight"):
+                    now = time.time()
+                    if now - self.last_highlight_alert > 900: # 15-minute cooldown limit
+                        self.last_highlight_alert = now
+                        alert = {
+                            "timestamp": datetime.utcnow().isoformat() + "Z",
+                            "symbol": symbol,
+                            "timeframe": "M5",
+                            "type": "HIGHLIGHT",
+                            "message": f"🎯 CẢNH BÁO TỚI VÙNG THANH KHOẢN:\n{analysis['highlight']}"
+                        }
+                        await self.redis_client.publish("signals:new", json.dumps(alert))
+            
             if analysis:
                 logger.info(f"Analysis complete: {analysis['signal']} (Conf: {analysis.get('confidence')}%)")
                 
-                # We always publish the active analysis to Redis so the Frontend UI can stream it Live
                 live_payload = {
                     "timestamp": datetime.utcnow().isoformat() + "Z",
                     "symbol": symbol,
@@ -77,16 +78,75 @@ class SignalGenerator:
                 }
                 await self.redis_client.publish("analysis:live", json.dumps(live_payload))
                 
-                # If confidence > 70% and not WAIT, it's actionable trading signal
-                if analysis.get('signal') in ['BUY', 'SELL'] and analysis.get('confidence', 0) >= 70:
-                    await self._handle_actionable_signal(symbol, "M5", analysis)
-            
-            self.last_analysis_time = time.time()
-            
+                # Check Scenarios rigorously against the structured SMC arrays
+                smc = analysis.get("smc_data", {})
+                scenario = None
+                
+                if smc.get("choch") and smc.get("fvg_present"):
+                    scenario = "SCENARIO_A"
+                elif smc.get("bos") and smc.get("htf_alignment"):
+                    scenario = "SCENARIO_B"
+                elif smc.get("sweep_detected"):
+                    scenario = "SCENARIO_C"
+                
+                if scenario:
+                    now = time.time()
+                    # 15-minute global cooldown for Scenarios to rigorously prevent duplicate back-to-back triggers during complex grinds
+                    if not hasattr(self, 'last_scenario_alert'):
+                        self.last_scenario_alert = 0
+                        
+                    if now - self.last_scenario_alert > 900:
+                        self.last_scenario_alert = now
+                        report_doc = {
+                            "timestamp": datetime.utcnow().isoformat() + "Z",
+                            "symbol": symbol,
+                            "timeframe": tf,
+                            "type": "SMC_ALERT",
+                            "scenario": scenario,
+                            "confidence": analysis.get('confidence', 0),
+                            "entry_price": analysis.get('entry_price', 0),
+                            "stop_loss": analysis.get('stop_loss', 0),
+                            "take_profit": analysis.get('take_profit', 0),
+                            "liquidity_zones": analysis.get("liquidity_zones", {}),
+                            "highlight": analysis.get("highlight", ""),
+                            "stats": analysis.get("stats", {}),
+                            "smc_data": smc,
+                            "ai_analysis": {
+                                "trend": analysis.get('trend', 'ranging'),
+                                "reasoning": analysis.get('reasoning', '')
+                            }
+                        }
+                        await self.redis_client.publish("signals:new", json.dumps(report_doc))
+                        logger.info(f"Published {scenario} SMC Alert to Telegram: {symbol}")
+                else:
+                    if analysis.get('signal') in ['BUY', 'SELL'] and analysis.get('confidence', 0) >= 70:
+                        await self._handle_actionable_signal(symbol, tf, analysis)
+
         except Exception as e:
-            logger.error(f"Error processing candle update: {e}")
-        finally:
-            self.analyzing = False
+            logger.error(f"Error processing candle update natively: {e}")
+
+    async def _check_big_shark(self, symbol: str, m5_candles: list):
+        """Mathematically detects massive institutional volume anomalies exactly on the M5 scope"""
+        recent = m5_candles[-1]
+        prev_19 = m5_candles[-20:-1]
+        avg_vol = sum(c['volume'] for c in prev_19) / 19 if prev_19 else 1
+        avg_body = sum(abs(c['open'] - c['close']) for c in prev_19) / 19 if prev_19 else 0.1
+        
+        body = abs(recent['open'] - recent['close'])
+        
+        # Shark Math Thresholds (User approved: 300% Volume Spike + 200% average structural width + absolute size > $1.5)
+        if recent['volume'] > avg_vol * 3.0 and body > avg_body * 2.0 and body > 1.5:
+            direction = "TĂNG MẠNH (Mua gom)" if recent['close'] > recent['open'] else "GIẢM SÂU (Bán tháo)"
+            now = time.time()
+            if now - self.last_shark_alert > 300:  # 5 Minute alert threshold
+                self.last_shark_alert = now
+                alert = {
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "symbol": symbol,
+                    "type": "SHARK",
+                    "message": f"🦈 CÁ MẬP XUẤT HIỆN: Cú sốc Volume cực lớn!\n• Hướng: {direction}\n• Nến M5 (Giá): ${recent['close']:.2f}\n• Kéo giãn: ${body:.2f} (Gấp {body/avg_body:.1f} lần TB)\n• Đột biến Volume: {recent['volume']:.0f} (Gấp {recent['volume']/avg_vol:.1f} lần)"
+                }
+                await self.redis_client.publish("signals:new", json.dumps(alert))
 
     async def _handle_actionable_signal(self, symbol: str, timeframe: str, analysis: dict):
         """Saves high confidence signals to DB and broadcasts to Notification service."""
@@ -115,21 +175,24 @@ class SignalGenerator:
             logger.info(f"Published new actionable signal: {signal_doc['type']} {symbol}")
 
     async def start_listening(self):
-        """Starts a Redis pubsub listener for M5 candle closes."""
+        """Starts a Redis pubsub listener for M5 and M15 candle closes."""
         pubsub = self.redis_client.pubsub()
-        await pubsub.subscribe("candles:M5")
+        # Listen to M5 and M15 implicitly to optimally trigger robust M5 filters explicitly
+        await pubsub.subscribe("candles:M5", "candles:M15")
         
-        logger.info("Listening for candles:M5 on Redis...")
+        logger.info("Listening for dynamic candles:M5 and M15 on Redis...")
         async for message in pubsub.listen():
             if message["type"] == "message":
                 try:
+                    channel = message["channel"]
+                    tf = channel.split(":")[1] if ":" in channel else "M5"
+                    
                     data = json.loads(message["data"])
                     symbol = data.get("symbol")
                     candle = data.get("candle")
                     if symbol and candle:
-                        # Offload to task without blocking the pubsub loop
                         import asyncio
-                        asyncio.create_task(self.process_candle_update(symbol, candle))
+                        asyncio.create_task(self.process_candle_update(symbol, candle, tf))
                 except Exception as e:
                     logger.error(f"Error parsing pubsub message: {e}") 
 

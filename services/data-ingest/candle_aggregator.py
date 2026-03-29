@@ -6,8 +6,9 @@ from indicators import IndicatorEngine
 logger = logging.getLogger(__name__)
 
 class CandleAggregator:
-    def __init__(self, redis_pub, symbol="OANDA:XAU_USD"):
+    def __init__(self, redis_pub, db, symbol="OANDA:XAU_USD"):
         self.redis = redis_pub
+        self.db = db
         self.symbol = symbol
         # Timeframes mapping to seconds
         self.timeframes = {
@@ -23,60 +24,72 @@ class CandleAggregator:
         self.historical_candles = {tf: [] for tf in self.timeframes}
         
     async def load_historical_candles(self):
-        """Loads last 100 candles from Finnhub REST to compute indicators seamlessly."""
-        import os
+        """Loads last 7 days of 1-minute candles from Yahoo Finance to seamlessly bootstrap the SMC historical cache."""
+        import yfinance as yf
+        import pandas as pd
         import time
-        import aiohttp
+        from datetime import datetime, timezone
         
-        api_key = os.getenv("FINNHUB_API_KEY")
-        if not api_key:
-            logger.warning("No FINNHUB_API_KEY, cannot load history")
-            return
-            
-        to_time = int(time.time())
-        from_time = to_time - (3 * 24 * 60 * 60) # Last 3 days to get enough M30 candles
+        logger.info(f"Downloading deep 1m historical seed data for Gold via YFinance...")
         
-        # Map our timeframe to Finnhub resolution
-        resolution_map = {"M1": "1", "M5": "5", "M15": "15", "M30": "30", "1H": "60"}
-
-        async with aiohttp.ClientSession() as session:
-            for tf in self.timeframes:
-                res = resolution_map.get(tf, "1")
-                url = f"https://finnhub.io/api/v1/forex/candle?symbol={self.symbol}&resolution={res}&from={from_time}&to={to_time}&token={api_key}"
+        try:
+            # Dynamic mapping for Yahoo Finance
+            yf_symbol = "GC=F"
+            if "BTC" in self.symbol:
+                yf_symbol = "BTC-USD"
+            elif "ETH" in self.symbol:
+                yf_symbol = "ETH-USD"
                 
-                try:
-                    async with session.get(url) as response:
-                        data = await response.json()
-                        if data and data.get("s") == "ok":
-                            candles = []
-                            for i in range(len(data['t'])):
-                                vol = data.get('v', [0]*len(data['t']))[i] if data.get('v') else 0
-                                c = {
-                                    "timestamp": data['t'][i] * 1000,
-                                    "open": data['o'][i],
-                                    "high": data['h'][i],
-                                    "low": data['l'][i],
-                                    "close": data['c'][i],
-                                    "volume": vol
-                                }
-                                candles.append(c)
-                            
-                            # Keep last 100
-                            self.historical_candles[tf] = candles[-100:]
-                            
-                            # Pre-calculate indicators on history sequentially
-                            working_list = []
-                            for idx, c in enumerate(self.historical_candles[tf]):
-                                working_list.append(c.copy())
-                                indicators = IndicatorEngine.calculate(working_list)
-                                if indicators:
-                                    self.historical_candles[tf][idx]["indicators"] = indicators
-                                    
-                            logger.info(f"Loaded {len(self.historical_candles[tf])} historical candles for {tf}")
-                        else:
-                            logger.warning(f"Failed to fetch history for {tf}: {data}")
-                except Exception as e:
-                    logger.error(f"Error fetching historical data for {tf}: {e}")
+            # yfinance allows period="5d" with interval="1m" natively
+            df = yf.download(yf_symbol, period="5d", interval="1m", progress=False)
+            
+            if df.empty:
+                logger.error(f"YFinance returned empty DataFrame for {yf_symbol}. History mapping failed.")
+                return
+            
+            # Reconstruct the 1M fundamental ticks
+            m1_candles = []
+            for d in df.itertuples():
+                # Handling multi-index columns from yf.download
+                # index 0 is Timestamp, High, Low, Open, Close, Volume
+                # the tuple looks like Pandas(Index=Timestamp('..'), Close=.. , High=.. , Low=.. , Open=.. , Volume=..)
+                # Because yfinance drops Ticker levels in simple pulls, we extract directly
+                
+                # Ensure timestamp is native UTC millisecond format
+                dt = d.Index
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                ts_ms = int(dt.timestamp() * 1000)
+                
+                c = {
+                    "timestamp": ts_ms,
+                    "open": float(getattr(d, "Open", getattr(d, "_3", 0))),
+                    "high": float(getattr(d, "High", getattr(d, "_1", 0))),
+                    "low": float(getattr(d, "Low", getattr(d, "_2", 0))),
+                    "close": float(getattr(d, "Close", getattr(d, "_4", 0))),
+                    "volume": float(getattr(d, "Volume", 0))
+                }
+                if c["close"] > 0:
+                    m1_candles.append(c)
+            
+            logger.info(f"Ingested {len(m1_candles)} raw historic 1-minute candles. Aggregating multi-timeframes...")
+            
+            # Now artificially 'play' these ticks through our resampler to perfectly build the M5, M15, M30 sets
+            # We clear out memory first to ensure clean state
+            self.current_candles = {tf: None for tf in self.timeframes}
+            self.historical_candles = {tf: [] for tf in self.timeframes}
+            
+            for base_candle in m1_candles:
+                # We inject the M1 close price to sequentially trigger aggregation silently
+                await self.process_tick(base_candle["close"], base_candle["volume"], base_candle["timestamp"], publish=False)
+                
+            for tf in self.timeframes:
+                logger.info(f"Buffered {len(self.historical_candles[tf])} verified historical {tf} candles.")
+                # Natively push entirely into robust MongoDB schema!
+                await self.db.save_candles_bulk(self.symbol, tf, self.historical_candles[tf])
+                
+        except Exception as e:
+            logger.error(f"Error massively injecting YFinance historical data: {e}", exc_info=True)
 
     def _get_candle_start(self, timestamp_ms: int, tf_seconds: int) -> int:
         """Rounds timestamp down to the nearest timeframe interval."""
@@ -84,7 +97,7 @@ class CandleAggregator:
         start_seconds = math.floor(ts_seconds / tf_seconds) * tf_seconds
         return int(start_seconds * 1000)
 
-    async def process_tick(self, price: float, volume: float, timestamp_ms: int):
+    async def process_tick(self, price: float, volume: float, timestamp_ms: int, publish: bool = True):
         """Called every time a trade tick arrives from websocket."""
         
         for tf, duration_sec in self.timeframes.items():
@@ -96,7 +109,7 @@ class CandleAggregator:
             if not active or candle_start > active["timestamp"]:
                 # If we had a previous candle, close it out, calculate indicators and save
                 if active:
-                    await self._close_candle(tf, active)
+                    await self._close_candle(tf, active, publish)
                 
                 # Start new candle
                 self.current_candles[tf] = {
@@ -114,8 +127,8 @@ class CandleAggregator:
                 active["close"] = price
                 active["volume"] += volume
                 
-    async def _close_candle(self, tf: str, closed_candle: dict):
-        """Closes a candle, attaches indicators, saves to DB, publishes to Redis."""
+    async def _close_candle(self, tf: str, closed_candle: dict, publish: bool):
+        """Closes a candle, attaches indicators, saves to DB, optionally publishes to Redis."""
         # Calculate indicators
         working_list = self.historical_candles[tf] + [closed_candle]
         indicators = IndicatorEngine.calculate(working_list)
@@ -125,9 +138,11 @@ class CandleAggregator:
             
         # Manage memory list
         self.historical_candles[tf].append(closed_candle)
-        if len(self.historical_candles[tf]) > 100:
+        if len(self.historical_candles[tf]) > 200: # Expanded historical memory to 200 explicitly for deep SMC mapping limits!
             self.historical_candles[tf].pop(0)
             
-        # Publish
-        await self.redis.publish_candle(self.symbol, tf, closed_candle)
-        logger.debug(f"Closed {tf} candle for {self.symbol}: {closed_candle['close']}")
+        # Publish and persistently upsert
+        if publish:
+            await self.db.save_candle(self.symbol, tf, closed_candle)
+            await self.redis.publish_candle(self.symbol, tf, closed_candle)
+            logger.debug(f"Closed {tf} candle natively for {self.symbol}: {closed_candle['close']}")

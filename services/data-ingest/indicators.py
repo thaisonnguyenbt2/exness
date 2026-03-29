@@ -52,9 +52,9 @@ class IndicatorEngine:
             macd_signal = float(latest.get('MACDs_12_26_9', 0))
             macd_hist = float(latest.get('MACDh_12_26_9', 0))
             
-            bb_lower = float(latest.get('BBL_20_2.0', 0))
-            bb_middle = float(latest.get('BBM_20_2.0', 0))
-            bb_upper = float(latest.get('BBU_20_2.0', 0))
+            bb_lower = float(latest.get('BBL_20_2.0_2.0', 0))
+            bb_middle = float(latest.get('BBM_20_2.0_2.0', 0))
+            bb_upper = float(latest.get('BBU_20_2.0_2.0', 0))
             
             ema9 = float(latest.get('EMA_9', 0))
             ema21 = float(latest.get('EMA_21', 0))

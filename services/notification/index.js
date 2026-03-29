@@ -6,10 +6,18 @@ import { Database } from './db.js';
 import "dotenv/config";
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-const pubsub = new Redis(REDIS_URL);
+const pubsub = new Redis(REDIS_URL, { enableReadyCheck: false });
 const telegram = new TelegramClient();
 const rateLimiter = new RateLimiter();
 const db = new Database();
+
+// Prevent ioredis unhandled exception crashes
+pubsub.on('error', (err) => {
+    // Ignore harmless subscriber mode sync errors
+    if (!err.message.includes('subscriber mode')) {
+        console.error('Redis error:', err);
+    }
+});
 
 async function start() {
   console.log("🚀 Starting Notification Service...");
@@ -37,12 +45,27 @@ async function start() {
           return;
         }
 
-        // 1. Rate Limiting Check
-        const allowed = await rateLimiter.checkRateLimit(chatId, signal.symbol);
-        if (!allowed) {
-          console.log(`⌛ Rate limited: Skipping alert for ${signal.symbol}`);
-          await db.logDeliveryStatus(signal.id, 'rate_limited');
-          return;
+        // 1. Rate Limiting Check (Bypass for anomalies since Python natively limits them)
+        if (signal.type !== "SHARK" && signal.type !== "HIGHLIGHT" && signal.type !== "SMC_ALERT") {
+            const allowed = await rateLimiter.checkRateLimit(chatId, signal.symbol);
+            if (!allowed) {
+              console.log(`⌛ Rate limited: Skipping standard alert for ${signal.symbol}`);
+              if (signal.id) await db.logDeliveryStatus(signal.id, 'rate_limited');
+              return;
+            }
+        }
+
+        // 1.5. Night-time Silence Mode (23:00 - 06:00 VNT)
+        if (signal.type === "HIGHLIGHT" || signal.type === "UPDATE") {
+            const vntDate = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh" }));
+            const currentHour = vntDate.getHours();
+            
+            // Sleep window: 11 PM to 6 AM Vietnam Time
+            if (currentHour >= 23 || currentHour < 6) {
+                console.log(`🌙 Night-mode active: Muting non-critical ${signal.type} for ${signal.symbol}`);
+                if (signal.id) await db.logDeliveryStatus(signal.id, 'muted_night_mode');
+                return;
+            }
         }
 
         // 2. Format Message

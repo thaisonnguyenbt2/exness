@@ -40,12 +40,32 @@ async def redis_to_ws_broadcaster():
     except Exception as e:
         logger.error(f"Broadcaster error: {e}")
 
+async def periodic_15m_report_loop():
+    """Aggressively triggers a multi-timeframe analysis and Telegram report every 15 minutes."""
+    logger.info("Initializing 15-Minute Periodic Market Reporting Loop...")
+    while True:
+        await asyncio.sleep(900)  # 15 minutes tightly synced
+        try:
+            logger.info("Executing scheduled 15-minute market context trigger")
+            # The signal_generator handles pulling fresh multi-timeframe candles directly prior to the AI
+            # Passing tf='M15' universally coerces the engine into broadcasting the ℹ️ Telegram 'UPDATE' state!
+            import os
+            current_symbol = os.getenv("SYMBOL", "BINANCE:BTCUSDT")
+            await signal_generator.process_candle_update(
+                symbol=current_symbol,
+                candle={"close": "Scheduled"},
+                tf="M15"
+            )
+        except Exception as e:
+            logger.error(f"Error in periodic 15m report loop: {e}")
+
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting AI Analyzer Service")
     await signal_generator.connect()
     asyncio.create_task(signal_generator.start_listening())
     asyncio.create_task(redis_to_ws_broadcaster())
+    asyncio.create_task(periodic_15m_report_loop())
     
 @app.on_event("shutdown")
 async def shutdown_event():

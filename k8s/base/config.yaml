@@ -6,7 +6,7 @@ data:
   MONGODB_URI: "mongodb://mongodb:27017/trading"
   REDIS_URL: "redis://redis:6379"
   FINNHUB_WS_URL: "wss://ws.finnhub.io"
-  SYMBOL: "OANDA:XAU_USD"
+  SYMBOL: "BINANCE:BTCUSDT"
 ---
 apiVersion: v1
 kind: Secret
