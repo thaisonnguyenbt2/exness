@@ -1,0 +1,36 @@
+name: 🚨 Oracle Cloud Uptime Monitor
+
+on:
+  schedule:
+    # Runs automatically every 5 minutes (24/7 Serverless Cron)
+    - cron: '*/5 * * * *'
+  # Allows triggering it manually for testing
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping EXNESS Trading Platform (Port 30000)
+        id: ping
+        run: |
+          # Use curl to aggressively check the HTTP status code. Timeout rigidly after 10 seconds.
+          HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}\n" --connect-timeout 10 http://${{ secrets.ORACLE_HOST }}:30000 || echo "000")
+          
+          if [ "$HTTP_STATUS" -ne 200 ] && [ "$HTTP_STATUS" -ne 301 ] && [ "$HTTP_STATUS" -ne 302 ] && [ "$HTTP_STATUS" -ne 304 ]; then
+            echo "❌ CRITICAL DISTRESS: Server responded with HTTP $HTTP_STATUS or actively timed out!"
+            exit 1
+          else
+            echo "✅ Node is securely online and routing traffic! (Status: HTTP $HTTP_STATUS)"
+          fi
+
+      - name: Dispatch Emergency Telegram Webhook Alert
+        if: failure()
+        run: |
+          # Triggered EXCLUSIVELY if the previous Ping step fails or crashes
+          MSG="🚨 <b>NGUY HIỂM (CRITICAL DOWN-TIME)</b> 🚨%0A%0A🛑 Máy chủ Oracle Cloud <b>ĐÃ SẬP HOẶC MẤT KẾT NỐI MẠNG!</b>%0A%0A📡 Lưới GitHub Actions không thể ping được Node: <code>${{ secrets.ORACLE_HOST }}</code>%0A🤖 Mọi thuật toán SMC Trading đã bị buộc dừng.%0A⏱ Thời gian sập: <b>$(date -u)</b>"
+          
+          curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage \
+          -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
+          -d text="$MSG" \
+          -d parse_mode=HTML

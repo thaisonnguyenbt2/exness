@@ -86,8 +86,8 @@ port-forward-frontend:
 	kubectl port-forward svc/frontend 3000:80 -n exness-trading
 
 # --- Oracle Cloud Deployment Variables ---
-OCI_COMPARTMENT_ID ?= ocid1.compartment.oc1..xxxx
-OCI_SUBNET_ID ?= ocid1.subnet.oc1..xxxx
+OCI_COMPARTMENT_ID ?= ocid1.tenancy.oc1..aaaaaaaaff4o35xfzgmq34zkq5vemqx6otahtjemr54yu5am6drh2x7d3nyq
+OCI_SUBNET_ID ?= ocid1.subnet.oc1.ap-singapore-1.aaaaaaaarsogtewxonrijwxo4p4lod2cttutk5hu4ysxmrarckd25faem7yq
 OCI_IMAGE_ID ?= ocid1.image.oc1..xxxx
 OCI_AD ?= Uocm:US-ASHBURN-AD-1
 SSH_PUB_KEY ?= ~/.ssh/id_rsa.pub
@@ -108,8 +108,9 @@ deploy-oracle:
 	@echo "✅ Instance provisioning started! Tailscale and ArgoCD will be available in ~5 minutes."
 
 login-oracle:
-	@echo "🔍 Querying Oracle Cloud for Public IP of 'exness-trading-node'..."
-	@INSTANCE_OCID=$$(oci compute instance list --compartment-id "$(OCI_COMPARTMENT_ID)" --display-name "exness-trading-node" --query "data[0].id" --raw-output) && \
+	@export PATH="$$PATH:$$HOME/bin"; \
+	echo "🔍 Querying Oracle Cloud for Public IP of 'exness-trading-node'..."; \
+	INSTANCE_OCID=$$(oci compute instance list --compartment-id "$(OCI_COMPARTMENT_ID)" --display-name "exness-trading-node" --query "data[0].id" --raw-output) && \
 	if [ -z "$$INSTANCE_OCID" ] || [ "$$INSTANCE_OCID" = "null" ]; then \
 		echo "❌ Cannot find instance. Are you sure it was deployed in this compartment?"; exit 1; \
 	fi && \
