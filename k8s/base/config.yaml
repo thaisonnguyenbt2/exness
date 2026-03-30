@@ -6,16 +6,5 @@ data:
   MONGODB_URI: "mongodb://mongodb:27017/trading"
   REDIS_URL: "redis://redis:6379"
   FINNHUB_WS_URL: "wss://ws.finnhub.io"
-  SYMBOL: "BINANCE:BTCUSDT"
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: api-keys
-type: Opaque
-stringData:
-  # Base64 encoding not needed when using stringData - K8s encodes it for you
-  FINNHUB_API_KEY: "YOUR_FINNHUB_KEY"
-  GEMINI_API_KEY: "YOUR_GEMINI_KEY"
-  TELEGRAM_BOT_TOKEN: "YOUR_TELEGRAM_TOKEN"
-  TELEGRAM_CHAT_ID: "YOUR_CHAT_ID"
+  SYMBOL: "OANDA:XAU_USD"
+

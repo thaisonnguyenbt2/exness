@@ -1,6 +1,6 @@
 # XAU/USD Trading Platform - Local Development Targets
 
-.PHONY: build-all build-ingest build-ai build-notify build-orchestrator build-frontend deploy-local apply-argocd install-argocd dev stop-dev stop-local update-local release-local release-prod deploy-oracle login-oracle
+.PHONY: build-all build-ingest build-ai build-notify build-orchestrator build-frontend deploy-local apply-argocd install-argocd sync-secrets dev stop-dev stop-local update-local release-local release-prod deploy-oracle login-oracle
 
 dev:
 	docker compose up --build
@@ -31,8 +31,13 @@ install-argocd:
 	@kubectl get namespace argocd > /dev/null 2>&1 || kubectl create namespace argocd
 	@kubectl get crd applications.argoproj.io > /dev/null 2>&1 || (kubectl apply -n argocd --server-side -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml && echo "Waiting for ArgoCD CRDs to settle..." && sleep 5)
 
+sync-secrets:
+	@kubectl get namespace exness-trading > /dev/null 2>&1 || kubectl create namespace exness-trading
+	@echo "🔐 Injecting secure environment variables from .env to cluster..."
+	@kubectl create secret generic api-keys --from-env-file=.env -n exness-trading --dry-run=client -o yaml | kubectl apply -f -
+
 # Requires local kubeconfig context pointing to Docker Desktop
-deploy-local: build-all install-argocd
+deploy-local: build-all install-argocd sync-secrets
 	kubectl apply -f k8s/local/argocd-app-local.yaml
 	kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
 	@echo "Waiting for frontend service to be created by ArgoCD..."
@@ -45,11 +50,11 @@ stop-local:
 	kubectl delete -f k8s/local/argocd-app-local.yaml
 	@echo "Local Kubernetes deployment (ArgoCD app) has been stopped."
 
-update-local: build-all
+update-local: build-all sync-secrets
 	kubectl rollout restart deployment -n exness-trading
 	@echo "Local images rebuilt and Kubernetes pods meticulously restarted with the newest code."
 
-release-local:
+release-local: sync-secrets
 	$(eval NEW_TAG := local-$(shell date +%Y%m%d%H%M%S))
 	@echo "🚀 Initiating local Release Pipeline with unique tag: $(NEW_TAG)"
 	$(MAKE) build-all IMAGE_TAG=$(NEW_TAG)
